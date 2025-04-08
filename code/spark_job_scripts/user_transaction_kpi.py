@@ -45,8 +45,8 @@ def main():
         ])
 
         logger.info("Loading data from S3")
-        users_df = spark.read.csv("s3://your-bucket/raw/users.csv", header=True, schema=users_schema)
-        rental_transactions_df = spark.read.csv("s3://your-bucket/raw/rental_transactions.csv", header=True, schema=rental_transactions_schema)
+        users_df = spark.read.csv("s3://<raw-data-bucket>/raw_data/users.csv", header=True, schema=users_schema)
+        rental_transactions_df = spark.read.csv("s3://<raw-data-bucket>/raw_data/rental_transactions.csv", header=True, schema=rental_transactions_schema)
 
         logger.info("Converting date strings to proper formats")
         users_df = users_df.withColumn("driver_license_expiry", to_date(col("driver_license_expiry"), "yyyy-MM-dd"))
@@ -96,8 +96,8 @@ def main():
             )
 
         logger.info("Writing results to S3")
-        daily_metrics.write.parquet("s3://your-bucket/processed/daily_metrics/", mode="overwrite")
-        user_metrics.write.parquet("s3://your-bucket/processed/user_metrics/", mode="overwrite")
+        daily_metrics.write.parquet("s3://<processed-data-bucket>/processed_data/daily_transaction_metrics/", mode="overwrite")
+        user_metrics.write.parquet("s3://<processed-data-bucket>/processed_data/user_engagement_metrics/", mode="overwrite")
 
         logger.info("Job completed successfully")
         spark.stop()
