@@ -1,0 +1,383 @@
+{
+    "Comment": "Car Rental Marketplace Data Pipeline with Athena Querying",
+    "StartAt": "CreateEMRCluster",
+    "States": {
+      "CreateEMRCluster": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::elasticmapreduce:createCluster.sync",
+        "Parameters": {
+          "Name": "CarRentalDataProcessing",
+          "VisibleToAllUsers": true,
+          "ReleaseLabel": "emr-6.9.0",
+          "Applications": [
+            {
+              "Name": "Spark"
+            },
+            {
+              "Name": "Hive"
+            }
+          ],
+          "ServiceRole": "EMR_DefaultRole",
+          "JobFlowRole": "EMR_EC2_DefaultRole",
+          "LogUri": "s3://<logs-bucket>/emr-logs/",
+          "Instances": {
+            "InstanceGroups": [
+              {
+                "Name": "Master nodes",
+                "Market": "ON_DEMAND",
+                "InstanceRole": "MASTER",
+                "InstanceType": "m5.xlarge",
+                "InstanceCount": 1
+              },
+              {
+                "Name": "Core nodes",
+                "Market": "ON_DEMAND",
+                "InstanceRole": "CORE",
+                "InstanceType": "m5.xlarge",
+                "InstanceCount": 2
+              }
+            ],
+            "KeepJobFlowAliveWhenNoSteps": true,
+            "TerminationProtected": false
+          },
+          "Configurations": [
+            {
+              "Classification": "spark-defaults",
+              "Properties": {
+                "spark.driver.memory": "4g",
+                "spark.executor.memory": "4g",
+                "spark.executor.cores": "2",
+                "spark.eventLog.enabled": "true"
+              }
+            },
+            {
+              "Classification": "yarn-site",
+              "Properties": {
+                "yarn.log-aggregation-enable": "true",
+                "yarn.log-aggregation.retain-seconds": "172800"
+              }
+            },
+            {
+              "Classification": "hadoop-env",
+              "Properties": {},
+              "Configurations": [
+                {
+                  "Classification": "export",
+                  "Properties": {
+                    "YARN_LOG_DIR": "/var/log/hadoop-yarn"
+                  }
+                }
+              ]
+            }
+          ],
+          "AutoTerminationPolicy": {
+            "IdleTimeout": 600
+          }
+        },
+        "Next": "ProcessEMRJobs",
+        "ResultPath": "$.Cluster",
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "Next": "TerminateClusterOnFailure",
+            "ResultPath": "$.error"
+          }
+        ]
+      },
+      "ProcessEMRJobs": {
+        "Type": "Parallel",
+        "Next": "RunGlueCrawler",
+        "Branches": [
+          {
+            "StartAt": "AddLocationVehicleJobStep",
+            "States": {
+              "AddLocationVehicleJobStep": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::elasticmapreduce:addStep.sync",
+                "Parameters": {
+                  "ClusterId.$": "$.Cluster.ClusterId",
+                  "Step": {
+                    "Name": "LocationVehicleKPIs",
+                    "ActionOnFailure": "CONTINUE",
+                    "HadoopJarStep": {
+                      "Jar": "command-runner.jar",
+                      "Args": [
+                        "spark-submit",
+                        "--deploy-mode",
+                        "cluster",
+                        "--master",
+                        "yarn",
+                        "--conf",
+                        "spark.yarn.submit.waitAppCompletion=true",
+                        "--conf",
+                        "spark.driver.extraJavaOptions=-Dlog4j.configuration=file:///etc/aws-emr/emr-log4j.properties",
+                        "--conf",
+                        "spark.executor.extraJavaOptions=-Dlog4j.configuration=file:///etc/aws-emr/emr-log4j.properties",
+                        "s3://<scripts-bucket>/scripts/location_vehicle_kpi.py"
+                      ]
+                    }
+                  }
+                },
+                "End": true,
+                "ResultPath": "$.LocationVehicleStep"
+              }
+            }
+          },
+          {
+            "StartAt": "AddUserTransactionJobStep",
+            "States": {
+              "AddUserTransactionJobStep": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::elasticmapreduce:addStep.sync",
+                "Parameters": {
+                  "ClusterId.$": "$.Cluster.ClusterId",
+                  "Step": {
+                    "Name": "UserTransactionKPIs",
+                    "ActionOnFailure": "CONTINUE",
+                    "HadoopJarStep": {
+                      "Jar": "command-runner.jar",
+                      "Args": [
+                        "spark-submit",
+                        "--deploy-mode",
+                        "cluster",
+                        "--master",
+                        "yarn",
+                        "--conf",
+                        "spark.yarn.submit.waitAppCompletion=true",
+                        "--conf",
+                        "spark.driver.extraJavaOptions=-Dlog4j.configuration=file:///etc/aws-emr/emr-log4j.properties",
+                        "--conf",
+                        "spark.executor.extraJavaOptions=-Dlog4j.configuration=file:///etc/aws-emr/emr-log4j.properties",
+                        "s3://<scripts-bucket>/scripts/user_transaction_kpi.py"
+                      ]
+                    }
+                  }
+                },
+                "End": true,
+                "ResultPath": "$.UserTransactionStep"
+              }
+            }
+          }
+        ],
+        "ResultPath": "$.EMRJobResults",
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "Next": "TerminateClusterOnFailure",
+            "ResultPath": "$.error"
+          }
+        ]
+      },
+      "RunGlueCrawler": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::aws-sdk:glue:startCrawler",
+        "Parameters": {
+          "Name": "crawl_rentals_processed_data"
+        },
+        "Next": "WaitForCrawler",
+        "ResultPath": "$.CrawlerExecution",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "IntervalSeconds": 10,
+            "MaxAttempts": 3,
+            "BackoffRate": 2
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "Next": "TerminateClusterOnFailure",
+            "ResultPath": "$.error"
+          }
+        ]
+      },
+      "WaitForCrawler": {
+        "Type": "Wait",
+        "Seconds": 120,
+        "Next": "CheckCrawlerStatus",
+        "Comment": "Wait for crawler to complete"
+      },
+      "CheckCrawlerStatus": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::aws-sdk:glue:getCrawler",
+        "Parameters": {
+          "Name": "crawl_rentals_processed_data"
+        },
+        "Next": "EvaluateCrawlerStatus",
+        "ResultPath": "$.CrawlerStatus",
+        "Retry": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "IntervalSeconds": 60,
+            "MaxAttempts": 3,
+            "BackoffRate": 1.5
+          }
+        ],
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "Next": "TerminateClusterOnFailure",
+            "ResultPath": "$.error"
+          }
+        ]
+      },
+      "EvaluateCrawlerStatus": {
+        "Type": "Choice",
+        "Choices": [
+          {
+            "And": [
+              {
+                "Variable": "$.CrawlerStatus.Crawler.LastCrawl",
+                "IsPresent": true
+              },
+              {
+                "Variable": "$.CrawlerStatus.Crawler.LastCrawl.Status",
+                "StringEquals": "SUCCEEDED"
+              }
+            ],
+            "Next": "ExecuteAthenaQueries"
+          },
+          {
+            "And": [
+              {
+                "Variable": "$.CrawlerStatus.Crawler.LastCrawl",
+                "IsPresent": true
+              },
+              {
+                "Variable": "$.CrawlerStatus.Crawler.LastCrawl.Status",
+                "StringEquals": "FAILED"
+              }
+            ],
+            "Next": "TerminateClusterOnFailure"
+          }
+        ],
+        "Default": "WaitForCrawler",
+        "Comment": "Check crawler status for completion"
+      },
+      "ExecuteAthenaQueries": {
+        "Type": "Parallel",
+        "Next": "TerminateCluster",
+        "Branches": [
+          {
+            "StartAt": "HighestRevenueLocation",
+            "States": {
+              "HighestRevenueLocation": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                "Parameters": {
+                  "QueryString": "SELECT location_name, city, state, total_revenue FROM car_rental_db.location_performance_metrics ORDER BY total_revenue DESC LIMIT 5;",
+                  "WorkGroup": "primary",
+                  "ResultConfiguration": {
+                    "OutputLocation": "s3://<query-results-bucket>/query-results/"
+                  }
+                },
+                "End": true,
+                "ResultPath": "$.AthenaResults.HighestRevenueLocation"
+              }
+            }
+          },
+          {
+            "StartAt": "MostRentedVehicleType",
+            "States": {
+              "MostRentedVehicleType": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                "Parameters": {
+                  "QueryString": "SELECT vehicle_type, rental_count FROM car_rental_db.vehicle_type_performance_metrics ORDER BY rental_count DESC LIMIT 1;",
+                  "WorkGroup": "primary",
+                  "ResultConfiguration": {
+                    "OutputLocation": "s3://<query-results-bucket>/query-results/"
+                  }
+                },
+                "End": true,
+                "ResultPath": "$.AthenaResults.MostRentedVehicleType"
+              }
+            }
+          },
+          {
+            "StartAt": "TopSpendingUsers",
+            "States": {
+              "TopSpendingUsers": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                "Parameters": {
+                  "QueryString": "SELECT first_name, last_name, total_user_spending FROM car_rental_db.user_engagement_metrics ORDER BY total_user_spending DESC LIMIT 10;",
+                  "WorkGroup": "primary",
+                  "ResultConfiguration": {
+                    "OutputLocation": "s3://<query-results-bucket>/query-results/"
+                  }
+                },
+                "End": true,
+                "ResultPath": "$.AthenaResults.TopSpendingUsers"
+              }
+            }
+          }
+        ],
+        "ResultPath": "$.AthenaQueryResults",
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "Next": "TerminateClusterOnFailure",
+            "ResultPath": "$.error"
+          }
+        ]
+      },
+      "TerminateCluster": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::elasticmapreduce:terminateCluster.sync",
+        "Parameters": {
+          "ClusterId.$": "$.Cluster.ClusterId"
+        },
+        "End": true,
+        "ResultPath": "$.Termination",
+        "Catch": [
+          {
+            "ErrorEquals": [
+              "States.ALL"
+            ],
+            "Next": "TerminateClusterOnFailure",
+            "ResultPath": "$.error"
+          }
+        ]
+      },
+      "TerminateClusterOnFailure": {
+        "Type": "Choice",
+        "Choices": [
+          {
+            "Variable": "$.Cluster.ClusterId",
+            "IsPresent": true,
+            "Next": "TerminateExistingCluster"
+          }
+        ],
+        "Default": "FailState"
+      },
+      "TerminateExistingCluster": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::elasticmapreduce:terminateCluster.sync",
+        "Parameters": {
+          "ClusterId.$": "$.Cluster.ClusterId"
+        },
+        "End": true
+      },
+      "FailState": {
+        "Type": "Fail",
+        "Error": "ClusterCreationFailed",
+        "Cause": "EMR cluster failed to create. Original error: $.error.Cause"
+      }
+    }
+  }
