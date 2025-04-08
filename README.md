@@ -1,229 +1,213 @@
-# Car Rental Data Processing Pipeline Documentation
-
-## Table of Contents
-1. [Overview](#overview)
-2. [Architecture Components](#architecture-components)
-3. [Getting Started](#getting-started)
-4. [Pipeline Stages](#pipeline-stages)
-5. [Troubleshooting Guide](#troubleshooting-guide)
-6. [Maintenance Tasks](#maintenance-tasks)
-7. [Resource Requirements](#resource-requirements)
+# Car Rental Marketplace Data Pipeline
 
 ## Overview
-This pipeline processes car rental marketplace data using AWS EMR, Glue, and Athena to generate business insights. The workflow is orchestrated using AWS Step Functions.
+This project implements a big data processing pipeline for a car rental marketplace using AWS services: EMR (Elastic MapReduce), Spark, Glue, Athena, and Step Functions. The pipeline ingests raw data from Amazon S3, transforms it using Spark to derive key business metrics, and makes it available for analysis via Athena. This documentation covers both the technical setup and the educational objectives of the project.
 
-## Architecture Components
+### Workflow
+1. **Raw Data Extraction**: Data is extracted from S3 buckets.
+2. **EMR Processing**: Spark jobs process the data on an EMR cluster.
+3. **Data Storage**: Transformed data is loaded back to S3 in Parquet format.
+4. **Glue Cataloging**: AWS Glue Crawler catalogs the processed data.
+5. **Athena Analysis**: SQL queries are executed in Athena for insights.
+6. **Orchestration**: AWS Step Functions orchestrates the entire workflow.
 
-### Data Flow
-- **Source**: Raw data in S3 (`s3://{YOUR_PREFIX}-raw-data/`)
-- **Processing**: EMR cluster running Spark jobs
-- **Output**: Processed data in S3 (`s3://{YOUR_PREFIX}-processed-data/`)
-- **Analytics**: Athena queries for business insights
+## Objectives
+- Understand AWS EMR and its role in a big data ecosystem.
+- Process raw data from S3 using Spark on EMR.
+- Transform datasets to derive key business metrics.
+- Use AWS Glue Crawlers and Athena to analyze processed data.
+- Automate data workflows with AWS Step Functions.
 
-### Core Components
-- AWS EMR Cluster (EMR 6.9.0)
-- AWS Step Functions
-- AWS Glue Crawler
-- Amazon Athena
-- Amazon S3
+## Prerequisites
+- AWS account with appropriate permissions.
+- S3 buckets for raw data, processed data, logs, and query results.
+- IAM roles: `EMR_DefaultRole` and `EMR_EC2_DefaultRole`.
+- AWS Glue Crawler configured.
+- Athena workgroup created.
 
-## Getting Started
+## Data
+The pipeline processes four datasets stored in S3 in raw CSV format:
+- **vehicles.csv**: Details of all available rental vehicles.
+- **locations.csv**: Master data for all rental locations.
+- **users.csv**: User sign-up information.
+- **rental_transactions.csv**: Records of vehicle rentals, including:
+  - Rental start and end times.
+  - Pickup and drop-off locations.
+  - Vehicle ID.
+  - Total amount paid.
 
-### Prerequisites
-- AWS Account with appropriate permissions
-- AWS CLI configured
-- Required IAM roles:
-  - EMR_DefaultRole
-  - EMR_EC2_DefaultRole
-  - AWSGlueServiceRole
-  - StepFunctionsExecutionRole
+## Pipeline Components
+### 1. AWS Step Functions State Machine
+Orchestrates the workflow with these states:
+- **CreateEMRCluster**: Creates an EMR cluster with Spark and Hive.
+- **ProcessEMRJobs**: Runs parallel Spark jobs:
+  - Location and Vehicle Performance Metrics.
+  - User and Transaction Analysis.
+- **RunGlueCrawler**: Triggers the Glue Crawler.
+- **ExecuteAthenaQueries**: Runs analytical queries:
+  - Highest revenue locations.
+  - Most rented vehicle types.
+  - Top spending users.
+- **TerminateCluster**: Shuts down the EMR cluster.
 
-### 1. S3 Bucket Setup
+#### Error Handling
+- Automatic cluster termination on failure.
+- Retry logic for crawler operations.
+- Detailed error logging.
 
-Create required S3 buckets:
-```bash
-# Replace {YOUR_PREFIX} with your chosen prefix
-aws s3 mb s3://{YOUR_PREFIX}-raw-data
-aws s3 mb s3://{YOUR_PREFIX}-processed-data
-aws s3 mb s3://{YOUR_PREFIX}-scripts
-aws s3 mb s3://{YOUR_PREFIX}-logs
-aws s3 mb s3://{YOUR_PREFIX}-athena-results
-```
+### 2. Spark Jobs
+#### Location and Vehicle Performance Metrics (`location_vehicle_kpi.py`)
+- **Inputs**:
+  - `s3://<raw-data-bucket>/raw_data/vehicles.csv`
+  - `s3://<raw-data-bucket>/raw_data/locations.csv`
+  - `s3://<raw-data-bucket>/raw_data/rental_transactions.csv`
+- **Outputs**:
+  - `s3://<processed-data-bucket>/processed_data/location_performance/parquet/`
+  - `s3://<processed-data-bucket>/processed_data/vehicle_type_performance/parquet/`
+- **Key Metrics Calculated**:
+  - Revenue per location.
+  - Transactions per location.
+  - Average, max, and min transaction amounts.
+  - Unique vehicles per location.
+  - Rental duration and revenue by vehicle type.
 
-Upload data files:
-```bash
-aws s3 cp users.csv s3://{YOUR_PREFIX}-raw-data/users.csv
-aws s3 cp vehicles.csv s3://{YOUR_PREFIX}-raw-data/vehicles.csv
-aws s3 cp locations.csv s3://{YOUR_PREFIX}-raw-data/locations.csv
-aws s3 cp rental_transactions.csv s3://{YOUR_PREFIX}-raw-data/rental_transactions.csv
-```
+#### User and Transaction Analysis (`user_transaction_kpi.py`)
+- **Inputs**:
+  - `s3://<raw-data-bucket>/raw_data/users.csv`
+  - `s3://<raw-data-bucket>/raw_data/rental_transactions.csv`
+- **Outputs**:
+  - `s3://<processed-data-bucket>/processed_data/daily_transaction/parquet/`
+  - `s3://<processed-data-bucket>/processed_data/user_engagement/parquet/`
+- **Key Metrics Calculated**:
+  - Daily transactions and revenue.
+  - User spending patterns.
+  - Rental duration metrics.
+  - Maximum and minimum transaction amounts.
+  - Total rental hours per user.
 
-Upload Spark scripts:
-```bash
-aws s3 cp location_vehicle_kpi.py s3://{YOUR_PREFIX}-scripts/location_vehicle_kpi.py
-aws s3 cp user_transaction_kpi.py s3://{YOUR_PREFIX}-scripts/user_transaction_kpi.py
-```
+### 3. AWS Services Configuration
+#### EMR Cluster Configuration
+- **Release Label**: `emr-6.9.0`
+- **Applications**: Spark, Hive
+- **Instance Types**: `m5.xlarge`
+- **Nodes**: 1 Master, 2 Core
+- **Spark Configuration**:
+  - Driver memory: 4GB
+  - Executor memory: 4GB
+  - Executor cores: 2
+- **Logging**: Enabled with aggregation, stored in `s3://<logs-bucket>/emr-logs/`.
 
-### 2. Create AWS Glue Crawler
-```bash
-aws glue create-crawler \
-    --name "car-rental-crawler" \
-    --role "AWSGlueServiceRole" \
-    --database-name "car_rental_db" \
-    --targets "{"S3Targets": [{"Path": "s3://{YOUR_PREFIX}-processed-data/"}]}"
-```
+#### Glue Crawler
+- **Name**: `crawl_rentals_processed_data`
+- **Target**: Processed data in `s3://<processed-data-bucket>/processed_data/`.
+- **Purpose**: Creates/updates the Glue Data Catalog (e.g., `car_rental_db`).
 
-### 3. Create Step Functions State Machine
-```bash
-aws stepfunctions create-state-machine \
-    --name "CarRentalDataPipeline" \
-    --role-arn "arn:aws:iam::{YOUR_ACCOUNT_ID}:role/StepFunctionsExecutionRole" \
-    --definition file://step_functions.json
-```
+#### Athena Queries
+- **Workgroup**: `primary`
+- **Output Location**: `s3://<query-results-bucket>/query-results/`
+- **Sample Queries**:
+  - Top revenue locations.
+  - Most popular vehicle types.
+  - Highest spending users.
 
-### 4. Run the Pipeline
-```bash
-aws stepfunctions start-execution \
-    --state-machine-arn "arn:aws:states:{YOUR_REGION}:{YOUR_ACCOUNT_ID}:stateMachine:CarRentalDataPipeline"
-```
+## Setup Instructions
+### Step 1: Upload Data to S3
+- Create buckets: `raw-data-bucket`, `processed-data-bucket`, `logs-bucket`, `query-results-bucket`.
+- Upload CSV files to `s3://<raw-data-bucket>/raw_data/`:
+  - `vehicles.csv`
+  - `locations.csv`
+  - `users.csv`
+  - `rental_transactions.csv`
 
-### 5. Cleanup
-```bash
-# Delete all resources when done
-aws s3 rb s3://{YOUR_PREFIX}-raw-data --force
-aws s3 rb s3://{YOUR_PREFIX}-processed-data --force
-aws s3 rb s3://{YOUR_PREFIX}-scripts --force
-aws s3 rb s3://{YOUR_PREFIX}-logs --force
-aws s3 rb s3://{YOUR_PREFIX}-athena-results --force
-aws glue delete-crawler --name "car-rental-crawler"
-aws stepfunctions delete-state-machine \
-    --state-machine-arn "arn:aws:states:{YOUR_REGION}:{YOUR_ACCOUNT_ID}:stateMachine:CarRentalDataPipeline"
-```
+### Step 2: Upload Spark Scripts
+- Place `location_vehicle_kpi.py` and `user_transaction_kpi.py` in `s3://<scripts-bucket>/scripts/`.
 
-## Pipeline Stages
+### Step 3: Configure Glue Crawler
+- Set up crawler to target `s3://<processed-data-bucket>/processed_data/`.
+- Configure database (e.g., `car_rental_db`).
 
-### 1. EMR Cluster Creation
-- **Configuration**: 
-  - 1 Master node (m5.xlarge)
-  - 2 Core nodes (m5.xlarge)
-  - Auto-termination after 10 minutes of inactivity
+### Step 4: Deploy Step Functions
+- Create state machine using the provided JSON definition.
+- Update bucket names in the configuration.
+- Set appropriate IAM permissions.
 
-### 2. Data Processing Jobs
-a) **Location and Vehicle KPIs** (`location_vehicle_kpi.py`)
-   - Processes location performance metrics
-   - Generates vehicle type statistics
-   - Output: `location_performance_metrics/` and `vehicle_type_performance_metrics/`
+## Execution
+1. **Start Pipeline**:
+   - Execute the Step Functions state machine via the AWS Console.
+   - Monitor progress in the AWS Console.
+2. **Expected Outputs**:
+   - Processed Parquet files in `s3://<processed-data-bucket>/processed_data/`.
+   - Updated Glue Data Catalog.
+   - Athena query results in `s3://<query-results-bucket>/query-results/`.
+   - Cluster termination upon completion.
 
-b) **User Transaction KPIs** (`user_transaction_kpi.py`)
-   - Processes user engagement metrics
-   - Generates daily transaction statistics
-   - Output: `daily_transaction_metrics/` and `user_engagement_metrics/`
+## Key Performance Indicators (KPIs)
+### Location and Vehicle Performance
+- Total revenue per location.
+- Total transactions per location.
+- Average, max, and min transaction amounts per location.
+- Unique vehicles used per location.
+- Rental duration metrics by vehicle type.
 
-### 3. Data Catalog Update
-- Glue Crawler: `car-rental-crawler`
-- Updates Glue Data Catalog for Athena queries
+### User and Transaction Metrics
+- Total daily transactions and revenue.
+- Average transaction value.
+- User engagement metrics (total transactions, total revenue per user).
+- Max and min spending per user.
+- Total rental hours per user.
 
-### 4. Analytics Queries
-Parallel execution of:
-- Highest revenue location analysis
-- Most rented vehicle type analysis
-- Top spending users analysis
-
-### 4 EMR Cluster Termination
-- Terminates EMR cluster after all jobs are completed
-
-## Troubleshooting Guide
+## Monitoring and Troubleshooting
+### Logging Locations
+- **EMR Cluster Logs**: `s3://<logs-bucket>/emr-logs/`
+- **Spark Application Logs**: Included in EMR logs.
+- **Step Functions Execution History**: Available in AWS Console.
+- **Athena Query Results**: `s3://<query-results-bucket>/query-results/`
 
 ### Common Issues and Solutions
+1. **Cluster Creation Failure**:
+   - Verify IAM roles exist.
+   - Check EC2 instance limits.
+   - Validate subnet configurations.
+2. **Spark Job Failures**:
+   - Check EMR step logs.
+   - Verify input data exists in S3.
+   - Validate file formats and schemas.
+3. **Glue Crawler Issues**:
+   - Verify crawler has permissions to access S3.
+   - Check processed data exists before running crawler.
+   - Review crawler logs for schema inference errors.
+4. **Athena Query Failures**:
+   - Verify tables exist in Glue Data Catalog.
+   - Check table names in queries match catalog.
+   - Validate output bucket permissions.
 
-1. **EMR Cluster Creation Failures**
-   - Check IAM roles: `EMR_DefaultRole` and `EMR_EC2_DefaultRole`
-   - Verify VPC/subnet configurations
-   - Review EMR service logs in `s3://{YOUR_PREFIX}-logs/emr-logs/`
+## Maintenance
+### Cost Optimization
+- Monitor and adjust cluster size.
+- Set appropriate auto-termination policies.
+- Clean up unnecessary S3 data.
 
-2. **Spark Job Failures**
-   - Check Spark job logs in EMR cluster
-   - Common causes:
-     - Schema mismatches
-     - Missing input data
-     - S3 permission issues
+### Updates
+- Review and update Spark scripts as needed.
+- Adjust metrics calculations based on business needs.
+- Update Athena queries for new analytical requirements.
 
-3. **Glue Crawler Issues**
-   - Verify crawler IAM permissions
-   - Check S3 bucket permissions
-   - Review crawler logs in CloudWatch
+## Sample Queries for Analysis
+```sql
+-- Top 5 revenue-generating locations
+SELECT location_name, city, state, total_revenue
+FROM car_rental_db.location_performance
+ORDER BY total_revenue DESC
+LIMIT 5;
 
-4. **Athena Query Failures**
-   - Verify table schema in Glue Data Catalog
-   - Check S3 output location permissions
-   - Review query syntax and table existence
+-- Most active vehicle types
+SELECT vehicle_type, rental_count
+FROM car_rental_db.vehicle_type_performance
+ORDER BY rental_count DESC
+LIMIT 5;
 
-### Monitoring Points
-1. **EMR Cluster**
-   - CloudWatch metrics for cluster health
-   - Spark application progress
-   - Resource utilization
-
-2. **Data Quality**
-   - Built-in validation checks in Spark jobs
-   - Null value monitoring
-   - Data volume anomalies
-
-3. **Pipeline State**
-   - Step Functions execution status
-   - Job completion notifications
-   - Error handling paths
-
-## Maintenance Tasks
-
-### Regular Maintenance
-1. Update EMR version when needed
-2. Review and optimize Spark configurations
-3. Monitor S3 storage usage
-4. Review IAM roles and permissions
-
-### Best Practices
-1. Test changes in development environment first
-2. Maintain backup of critical data
-3. Regular monitoring of costs
-4. Keep documentation updated
-
-## Resource Requirements
-
-### S3 Buckets Structure
-```
-{YOUR_PREFIX}-raw-data/
-├── users.csv
-├── vehicles.csv
-├── locations.csv
-└── rental_transactions.csv
-
-{YOUR_PREFIX}-processed-data/
-├── location_performance_metrics/
-├── vehicle_type_performance_metrics/
-├── daily_transaction_metrics/
-└── user_engagement_metrics/
-
-{YOUR_PREFIX}-scripts/
-├── location_vehicle_kpi.py
-└── user_transaction_kpi.py
-
-{YOUR_PREFIX}-logs/
-└── emr-logs/
-
-{YOUR_PREFIX}-athena-results/
-```
-
-### Required IAM Roles
-- EMR_DefaultRole
-- EMR_EC2_DefaultRole
-- AWSGlueServiceRole
-- StepFunctionsExecutionRole
-
-### Required Permissions
-Each role needs specific permissions for:
-- S3 bucket access
-- EMR cluster management
-- Glue crawler operations
-- Athena query execution
-- CloudWatch logging
+-- User engagement metrics (Top 10 spenders)
+SELECT first_name, last_name, total_user_transactions, total_user_spending
+FROM car_rental_db.user_engagement
+ORDER BY total_user_spending DESC
+LIMIT 10;
