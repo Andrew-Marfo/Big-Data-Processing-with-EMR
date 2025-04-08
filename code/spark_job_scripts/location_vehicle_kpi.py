@@ -59,9 +59,9 @@ def main():
         ])
 
         logger.info("Loading data from S3")
-        vehicles_df = spark.read.csv("s3://my-car-rental-marketplace/raw_data/vehicles.csv", header=True, schema=vehicles_schema)
-        locations_df = spark.read.csv("s3://my-car-rental-marketplace/raw_data/locations.csv", header=True, schema=locations_schema)
-        rental_transactions_df = spark.read.csv("s3://my-car-rental-marketplace/raw_data/rental_transactions.csv", header=True, schema=rental_transactions_schema)
+        vehicles_df = spark.read.csv("s3://<raw-data-bucket>/raw_data/vehicles.csv", header=True, schema=vehicles_schema)
+        locations_df = spark.read.csv("s3://<raw-data-bucket>/raw_data/locations.csv", header=True, schema=locations_schema)
+        rental_transactions_df = spark.read.csv("s3://<raw-data-bucket>/raw_data/rental_transactions.csv", header=True, schema=rental_transactions_schema)
 
         logger.info("Converting date strings to proper formats")
         vehicles_df = vehicles_df.withColumn("expiration_date", to_date(col("expiration_date"), "dd-MM-yyyy"))
@@ -103,8 +103,8 @@ def main():
             )
 
         logger.info("Writing results to S3")
-        location_metrics.write.parquet("s3://my-car-rental-marketplace/processed_data/location_performance_metrics/", mode="overwrite")
-        vehicle_type_metrics.write.parquet("s3://my-car-rental-marketplace/processed_data/vehicle_type_performance_metrics/", mode="overwrite")
+        location_metrics.write.parquet("s3://<processed-data-bucket>/processed_data/location_performance_metrics/", mode="overwrite")
+        vehicle_type_metrics.write.parquet("s3://<processed-data-bucket>/processed_data/vehicle_type_performance_metrics/", mode="overwrite")
 
         logger.info("Job completed successfully")
         spark.stop()
