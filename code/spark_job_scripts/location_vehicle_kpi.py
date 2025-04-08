@@ -17,9 +17,8 @@ def main():
     try:
         logger.info("Initializing Spark session")
         spark = SparkSession.builder.appName("CarRentalLocationVehicleKPI").getOrCreate()
-        
+
         logger.info("Defining schemas")
-        # vehicles schema
         vehicles_schema = StructType([
             StructField("active", IntegerType(), True),
             StructField("vehicle_license_number", IntegerType(), True),
@@ -37,7 +36,6 @@ def main():
             StructField("vehicle_type", StringType(), True),
         ])
 
-        # locations schema
         locations_schema = StructType([
             StructField("location_id", StringType(), True),
             StructField("location_name", StringType(), True),
@@ -49,7 +47,6 @@ def main():
             StructField("longitude", FloatType(), True),
         ])
 
-        # rental locations schema
         rental_transactions_schema = StructType([
             StructField("rental_id", StringType(), True),
             StructField("user_id", StringType(), True),
@@ -62,13 +59,11 @@ def main():
         ])
 
         logger.info("Loading data from S3")
-        vehicles_df = spark.read.csv("s3://your-bucket/raw/vehicles.csv", header=True, schema=vehicles_schema)
-        locations_df = spark.read.csv("s3://your-bucket/raw/locations.csv", header=True, schema=locations_schema)
-        rental_transactions_df = spark.read.csv("s3://your-bucket/raw/rental_transactions.csv", header=True, schema=rental_transactions_schema)
+        vehicles_df = spark.read.csv("s3://my-car-rental-marketplace/raw_data/vehicles.csv", header=True, schema=vehicles_schema)
+        locations_df = spark.read.csv("s3://my-car-rental-marketplace/raw_data/locations.csv", header=True, schema=locations_schema)
+        rental_transactions_df = spark.read.csv("s3://my-car-rental-marketplace/raw_data/rental_transactions.csv", header=True, schema=rental_transactions_schema)
 
         logger.info("Converting date strings to proper formats")
-        users_df = users_df.withColumn("driver_license_expiry", to_date(col("driver_license_expiry"), "yyyy-MM-dd"))
-        users_df = users_df.withColumn("creation_date", to_date(col("creation_date"), "yyyy-MM-dd"))
         vehicles_df = vehicles_df.withColumn("expiration_date", to_date(col("expiration_date"), "dd-MM-yyyy"))
         vehicles_df = vehicles_df.withColumn("certification_date", to_date(col("certification_date"), "yyyy-MM-dd"))
         vehicles_df = vehicles_df.withColumn("last_update_timestamp", to_timestamp(col("last_update_timestamp"), "dd-MM-yyyy HH:mm:ss"))
@@ -83,8 +78,7 @@ def main():
         joined_df = joined_df.withColumn(
             "rental_duration_hours",
             (unix_timestamp(to_timestamp("rental_end_time", "yyyy-MM-dd HH:mm:ss")) -
-            unix_timestamp(to_timestamp("rental_start_time", "yyyy-MM-dd HH:mm:ss"))
-            ) / 3600
+             unix_timestamp(to_timestamp("rental_start_time", "yyyy-MM-dd HH:mm:ss"))) / 3600
         )
 
         logger.info("Calculating Location Performance Metrics")
@@ -92,7 +86,7 @@ def main():
             .agg(
                 sum("total_amount").alias("total_revenue"),
                 count("rental_id").alias("total_transactions"),
-                round(avg("total_amount"),2).alias("avg_transaction_amount"),
+                round(avg("total_amount"), 2).alias("avg_transaction_amount"),
                 max("total_amount").alias("max_transaction_amount"),
                 min("total_amount").alias("min_transaction_amount"),
                 countDistinct("vehicle_id").alias("unique_vehicles_used")
@@ -103,20 +97,21 @@ def main():
             .agg(
                 count("rental_id").alias("rental_count"),
                 sum("total_amount").alias("total_revenue"),
-                round(avg("total_amount"),2).alias("avg_revenue"),
+                round(avg("total_amount"), 2).alias("avg_revenue"),
                 sum("rental_duration_hours").alias("total_rental_hours"),
-                round(avg("rental_duration_hours"),2).alias("avg_rental_duration_hours")
+                round(avg("rental_duration_hours"), 2).alias("avg_rental_duration_hours")
             )
 
         logger.info("Writing results to S3")
-        location_metrics.write.parquet("s3://your-bucket/processed/location_metrics/", mode="overwrite")
-        vehicle_type_metrics.write.parquet("s3://your-bucket/processed/vehicle_type_metrics/", mode="overwrite")
+        location_metrics.write.parquet("s3://my-car-rental-marketplace/processed_data/location_performance_metrics/", mode="overwrite")
+        vehicle_type_metrics.write.parquet("s3://my-car-rental-marketplace/processed_data/vehicle_type_performance_metrics/", mode="overwrite")
 
         logger.info("Job completed successfully")
         spark.stop()
-        
+        sys.exit(0)
+
     except Exception as e:
-        logger.error(f"Job failed: {str(e)}")
+        logger.error(f"Job failed: {str(e)}", exc_info=True)
         if 'spark' in locals():
             spark.stop()
         sys.exit(1)
